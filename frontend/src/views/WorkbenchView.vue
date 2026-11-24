@@ -70,6 +70,8 @@
       </tbody>
     </table>
 
+    <ReceiptPanel v-if="isReceiptEntry" :module-key="meta.key" />
+
     <div v-if="showCreate" class="modal-backdrop" data-testid="create-modal">
       <form class="modal" @submit.prevent="submitCreate">
         <h3>登记{{ meta.entity }}</h3>
@@ -103,10 +105,15 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
+import ReceiptPanel from '@/components/ReceiptPanel.vue'
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
+// 提交版本与检查点工作台两个入口挂载同一份提交身份面板。
+const isReceiptEntry = computed(
+  () => props.moduleKey === 'delta_commit' || props.moduleKey === 'stream_checkpoint',
+)
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')

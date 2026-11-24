@@ -77,5 +77,40 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 增量提交回执一致性
+
+针对“相同来源的增量写入重复处理时，服务一重启事务标识就对不上”的共同根因，
+平台以**批次真实业务身份**（来源 + 目标湖表 + 分区 + 起始/结束偏移 + 行数）为锚点：
+
+- 事务标识由业务身份做 sha256 确定性生成（`app/incremental_receipt.py`），
+  不再使用带进程随机盐的内置 `hash`，重启或换进程后同一批次事务标识不变；
+- 同一业务身份全平台只有一份增量提交回执，重复处理只追加 `attempts` 候选，
+  首次落库凭据（`write_basis`/`written_data`）永不覆盖；分区是身份的一部分，
+  p1、p2 各写 9 行也各自独立成回执；
+- 回执以 JSONL 落盘到 `backend/data/`（可用环境变量 `LAKEHOUSE_DATA_DIR` 改目录，
+  该目录已在 `.gitignore` 忽略），服务重启后自动重建，仍可查回原写入依据、
+  实际写入数据与确认范围；
+- 版本详情（`delta_commit`）与检查点工作台（`stream_checkpoint`）两个入口
+  回写并读取同一份提交身份；检查点确认位置回写回执待办；
+- 同一区间恢复只生效一次，再次进入不登记第二份回执；
+- 检查点续点按证据优先级裁决：已保存检查点确认位置 > 回执实际落库区间 >
+  数据源起始偏移。
+
+主要接口（前缀 `/api/incremental-receipts`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/commit/{entry_id}` | 版本详情入口：按业务身份登记增量写入，返回回执 |
+| POST | `/checkpoint/{entry_id}/save` | 检查点入口：保存确认位置并回写同一回执 |
+| POST | `/checkpoint/{entry_id}/recover` | 检查点入口：区间恢复（同一区间只生效一次） |
+| GET | `/checkpoint/{entry_id}/view` | 检查点视角：哪组数据落库、尚需确认的偏移 |
+| GET | `?table=&partition=&source=` | 回执工作台清单 |
+| GET | `/by-transaction/{transaction_id}` | 按事务标识查回执 |
+| GET | `/next-offset` | 证据优先级裁决检查点续点 |
+| POST | `/identity/verify` | 校验业务身份并预览稳定事务标识（不登记） |
+
+跨进程端到端验证脚本：`scripts/e2e_incremental_receipt.sh`
+（每个 Python 调用都是全新解释器进程，真实模拟写后中断、换进程重试与重启查回）。
+
 领域：数据工程
 子方向：数仓与数据湖
